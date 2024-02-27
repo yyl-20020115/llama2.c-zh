@@ -314,6 +314,8 @@ Fastllm(c++加速LLM推理): https://github.com/ztxz16/fastllm
 
 vLLM(高效推理和部署) https://github.com/vllm-project/vllm
 
+picoGPT(60行代码从头实现GPT) https://jaykmody.com/blog/gpt-from-scratch/
+
 ## [License](https://github.com/karpathy/llama2.c)
 
 MIT
