@@ -16,6 +16,7 @@ $ ./run
 #include <fcntl.h>
 #if defined _WIN32
     #include "win.h"
+    #include "io.h"
 #else
     #include <unistd.h>
     #include <sys/mman.h>
@@ -278,7 +279,7 @@ void transformer(int token, int pos, Config* p, RunState* s, TransformerWeights*
                 for (int i = 0; i < head_size; i++) {
                     score += q[i] * k[i];
                 }
-                score /= sqrtf(head_size);
+                score /= sqrtf((float)head_size);
                 // save the score to the attention buffer
                 att[t] = score;
             }
@@ -358,7 +359,7 @@ void bpe_encode(char *text, char **vocab, float *vocab_scores, int vocab_size, u
 
     // first encode every individual character in the input string
     *n_tokens = 0; // the number of tokens
-    int text_length = strlen(text);
+    size_t text_length = strlen(text);
     int i = 0;
     while (i < text_length) {
         unsigned char byte1 = text[i];
@@ -418,11 +419,11 @@ void bpe_encode(char *text, char **vocab, float *vocab_scores, int vocab_size, u
 // ----------------------------------------------------------------------------
 // utilities: time / rng
 
-long time_in_ms() {
+time_t time_in_ms() {
     // return time in milliseconds, for benchmarking the model speed
     struct timespec time;
     clock_gettime(CLOCK_REALTIME, &time);
-    return time.tv_sec * 1000 + time.tv_nsec / 1000000;
+    return (time.tv_sec * 1000 + time.tv_nsec / 1000000);
 }
 
 unsigned long long rng_seed;
@@ -527,7 +528,10 @@ void error_usage() {
 }
 
 int main(int argc, char *argv[]) {
-
+#ifdef _WIN32
+    //the database uses UTF-8 encoding, so we have to set console to UTF-8 CodePage
+    SetConsoleOutputCP(65001);
+#endif
     // default inits
     char *checkpoint = NULL;  // e.g. out/model.bin
     float temperature = 1.0f; // 0.0 = greedy deterministic. 1.0 = original. don't set higher
@@ -538,15 +542,19 @@ int main(int argc, char *argv[]) {
     char *tokenizerBin = "tokenizers/llama2en/tokenizer.bin";      // path of tokenzier.bin
 
     // poor man's C argparse so we can override the defaults above from the command line
-    if (argc >= 2) { checkpoint = argv[1]; } else { error_usage(); }
+    if (argc >= 2) { checkpoint = argv[1]; }
+    else { error_usage(); return 1; }
     for (int i = 2; i < argc; i+=2) {
         // do some basic validation
-        if (i + 1 >= argc) { error_usage(); } // must have arg after flag
-        if (argv[i][0] != '-') { error_usage(); } // must start with dash
-        if (strlen(argv[i]) != 2) { error_usage(); } // must be -x (one dash, one letter)
+        if (i + 1 >= argc) { error_usage();  return 1;
+        } // must have arg after flag
+        if (argv[i][0] != '-') { error_usage();  return 1;
+        } // must start with dash
+        if (strlen(argv[i]) != 2) { error_usage();  return 1;
+        } // must be -x (one dash, one letter)
         // read in the args
-        if (argv[i][1] == 't') { temperature = atof(argv[i + 1]); }
-        else if (argv[i][1] == 'p') { topp = atof(argv[i + 1]); }
+        if (argv[i][1] == 't') { temperature = (float)atof(argv[i + 1]); }
+        else if (argv[i][1] == 'p') { topp = (float)atof(argv[i + 1]); }
         else if (argv[i][1] == 's') { rng_seed = atoi(argv[i + 1]); }
         else if (argv[i][1] == 'n') { steps = atoi(argv[i + 1]); }
         else if (argv[i][1] == 'i') { prompt = argv[i + 1]; }
@@ -554,7 +562,9 @@ int main(int argc, char *argv[]) {
         else { error_usage(); }
     }
     if(rng_seed == 0) { rng_seed =  (unsigned int)time(NULL);}
-
+    if (prompt == NULL) {
+        prompt = "从前,有一个小女孩";
+    }
     // read in the model.bin file
     Config config;
     TransformerWeights weights;
@@ -563,7 +573,7 @@ int main(int argc, char *argv[]) {
     ssize_t file_size;     // size of the checkpoint file in bytes
     {
         FILE *file = fopen(checkpoint, "rb");
-        if (!file) { fprintf(stderr, "Couldn't open file %s\n", checkpoint); return 1; }
+        if (file == 0) { fprintf(stderr, "Couldn't open file %s\n", checkpoint); return 1; }
         // read in the config header
         if (fread(&config, sizeof(Config), 1, file) != 1) { return 1; }
         // negative vocab size is hacky way of signaling unshared weights. bit yikes.
@@ -574,7 +584,7 @@ int main(int argc, char *argv[]) {
         file_size = ftell(file); // get the file size, in bytes
         fclose(file);
         // memory map the Transformer weights into the data pointer
-        fd = open(checkpoint, O_RDONLY); // open in read only mode
+        fd = _open(checkpoint, O_RDONLY); // open in read only mode
         if (fd == -1) { fprintf(stderr, "open failed!\n"); return 1; }
         data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
         if (data == MAP_FAILED) { fprintf(stderr, "mmap failed!\n"); return 1; }
@@ -616,7 +626,7 @@ int main(int argc, char *argv[]) {
     }
 
     // start the main loop
-    long start = 0;  // used to time our code, only initialized after first iteration
+    time_t start = 0;  // used to time our code, only initialized after first iteration
     int next;        // will store the next token in the sequence
     int token = 1;   // init with token 1 (=BOS), as done in Llama-2 sentencepiece tokenizer
     int pos = 0;     // position in the sequence
@@ -667,7 +677,7 @@ int main(int argc, char *argv[]) {
 
     // report achieved tok/s (pos-1 because the timer starts after first iteration)
     if (pos > 1) {
-        long end = time_in_ms();
+        time_t end = time_in_ms();
         fprintf(stderr, "achieved tok/s: %f\n", (pos-1) / (double)(end-start)*1000);
     }
 
@@ -678,6 +688,6 @@ int main(int argc, char *argv[]) {
     free(vocab_scores);
     if (prompt_tokens != NULL) free(prompt_tokens);
     if (data != MAP_FAILED) munmap(data, file_size);
-    if (fd != -1) close(fd);
+    if (fd != -1) _close(fd);
     return 0;
 }
